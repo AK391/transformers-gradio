@@ -16,48 +16,36 @@ First, you'll need a Hugging Face model. Then in a Python file, write:
 
 ```python
 import gradio as gr
-from transformers_gradio import TransformersGradio
+from transformers_gradio import registry
 
-gr.load(
-    model_path='organization/model-name',  # Hugging Face model ID
-    src=TransformersGradio.registry,
-).launch()
+interface = registry(
+    model_path='organization/model-name'  # Hugging Face model ID
+)
+interface.launch()
 ```
 
-Run the Python file, and you should see a Gradio Interface connected to your local 🤗 Transformers model!
+Run the Python file, and you should see a Gradio chat interface connected to your local 🤗 Transformers model!
 
 # Customization 
 
-The interface includes several parameters that can be adjusted through the UI:
+The interface includes several parameters that can be adjusted through the "⚙️ Parameters" accordion:
 
-- System prompt
-- Temperature (0-1)
-- Max new tokens (128-4096)
-- Top K sampling (1-80)
-- Repetition penalty (0-2)
-- Top P sampling (0-1)
-
-The model uses 4-bit quantization by default and will attempt to use Flash Attention 2 if available, falling back to standard attention if the installation fails.
-
-```python
-import gradio as gr
-from transformers_gradio import TransformersGradio
-
-gr.load(
-    model_path='organization/model-name',
-    src=TransformersGradio.registry,
-    # Add any additional model kwargs here
-).launch()
-```
+- System prompt (default: "You are a helpful AI assistant.")
+- Temperature (0-1, default: 0.7)
+- Max new tokens (128-4096, default: 1024)
+- Top K sampling (1-80, default: 40)
+- Repetition penalty (0-2, default: 1.1)
+- Top P sampling (0-1, default: 0.95)
 
 # Under the Hood
 
 The library uses 🤗 Transformers with the following features:
-- 4-bit quantization using bitsandbytes
-- Automatic Flash Attention 2 installation attempt
-- Streaming token generation
+- 4-bit quantization using BitsAndBytes (bfloat16)
+- Automatic Flash Attention 2 installation with fallback to standard attention
+- Streaming token generation using TextIteratorStreamer
 - ChatML formatting for conversations
 - Support for both text and image inputs (for multimodal models)
+- Automatic device selection (CUDA if available, otherwise CPU)
 
 -------
 
