@@ -1,3 +1,4 @@
 transformers
 gradio>=5.5.0
 bitsandbytes
+flash-attn
