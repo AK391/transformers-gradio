@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "llama-cpp-python-gradio"
-version = "0.0.4"
-description = "A Python package for creating Gradio applications with llama.cpp models"
+name = "transformers-gradio"
+version = "0.0.1"
+description = "A Python package for creating Gradio applications with Transformers models"
 authors = [
     { name = "AK", email = "ahsen.khaliq@gmail.com" }
 ]
@@ -18,17 +18,16 @@ classifiers = [
 ]
 dependencies = [
     "gradio>=5.5.0",
-    "llama-cpp-python",
-    "huggingface-hub",
+    "transformers",
 ]
 
 [project.urls]
-homepage = "https://github.com/AK391/llama-cpp-python-gradio"
-repository = "https://github.com/AK391/llama-cpp-python-gradio"
+homepage = "https://github.com/AK391/transformers-gradio"
+repository = "https://github.com/AK391/transformers-gradio"
 
 [project.optional-dependencies]
 dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["llama_cpp_python_gradio"]
+packages = ["transformers_gradio"]
 

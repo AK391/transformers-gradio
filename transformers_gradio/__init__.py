@@ -1,9 +1,12 @@
 import os
-from llama_cpp import Llama
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, list_repo_files
 import gradio as gr
 from typing import Callable
 import base64
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from threading import Thread
+from transformers import TextIteratorStreamer
 
 __version__ = "0.0.1"
 
@@ -11,14 +14,21 @@ __version__ = "0.0.1"
 def get_fn(model_path: str, **model_kwargs):
     """Create a chat function with the specified model."""
     
-    # Initialize model once
-    llm = Llama(
-        model_path=model_path,
-        n_ctx=8192,  # Large context window
-        n_batch=512,
-        **model_kwargs
+    # Initialize tokenizer and model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16
     )
     
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map="auto",
+        quantization_config=quantization_config,
+        attn_implementation="flash_attention_2",
+    )
+
     def predict(
         message: str,
         history,
@@ -31,46 +41,45 @@ def get_fn(model_path: str, **model_kwargs):
     ):
         try:
             # Format conversation with ChatML format
-            messages = []
-            messages.append({
-                "role": "system",
-                "content": system_prompt
-            })
-            
-            # Add conversation history
+            instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
             for user_msg, assistant_msg in history:
-                messages.append({"role": "user", "content": str(user_msg)})
-                if assistant_msg:
-                    messages.append({"role": "assistant", "content": str(assistant_msg)})
-            
-            # Add current message
-            messages.append({"role": "user", "content": str(message)})
+                instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
+            instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
 
-            # Generate response with streaming
-            response_text = ""
-            for chunk in llm.create_chat_completion(
-                messages=messages,
-                stream=True,
+            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            enc = tokenizer(instruction, return_tensors="pt", padding=True, truncation=True)
+            input_ids, attention_mask = enc.input_ids, enc.attention_mask
+
+            # Truncate if needed
+            if input_ids.shape[1] > 8192:  # Using n_ctx from original
+                input_ids = input_ids[:, -8192:]
+                attention_mask = attention_mask[:, -8192:]
+
+            generate_kwargs = dict(
+                input_ids=input_ids.to(device),
+                attention_mask=attention_mask.to(device),
+                streamer=streamer,
+                do_sample=True,
                 temperature=temperature,
-                max_tokens=max_new_tokens,
+                max_new_tokens=max_new_tokens,
                 top_k=top_k,
-                top_p=top_p,
-                repeat_penalty=repetition_penalty,
-            ):
-                try:
-                    if chunk and isinstance(chunk, dict) and "choices" in chunk:
-                        delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                        if delta:
-                            response_text += delta
-                            yield response_text.strip()
-                except (ValueError, SyntaxError) as e:
-                    print(f"Error parsing chunk: {str(e)}")
-                    continue
-            
-            # Ensure we yield something if no response
+                repetition_penalty=repetition_penalty,
+                top_p=top_p
+            )
+
+            t = Thread(target=model.generate, kwargs=generate_kwargs)
+            t.start()
+
+            response_text = ""
+            for new_token in streamer:
+                if new_token in ["<|endoftext|>", "<|im_end|>"]:
+                    break
+                response_text += new_token
+                yield response_text.strip()
+
             if not response_text.strip():
                 yield "I apologize, but I was unable to generate a response. Please try again."
-                
+
         except Exception as e:
             print(f"Error during generation: {str(e)}")
             yield f"An error occurred: {str(e)}"
@@ -146,57 +155,22 @@ def get_pipeline(model_name):
 
 
 def get_model_path(name: str = None, model_path: str = None) -> str:
-    """Get the local path to the model, downloading it from HF if necessary."""
+    """Get the local path to the model."""
     if model_path:
         return model_path
     
     if name:
         if "/" in name:
-            repo_id = name
-            try:
-                # List all files in the repo
-                from huggingface_hub import list_repo_files
-                files = [f for f in list_repo_files(repo_id) if f.endswith('.gguf')]
-                
-                # Find best available quantization (Q8 > Q6 > Q4)
-                for prefix in ['Q8', 'Q6', 'Q4']:
-                    best_match = next((f for f in files if prefix in f), None)
-                    if best_match:
-                        print(f"Found {prefix} model: {best_match}")
-                        return hf_hub_download(
-                            repo_id=repo_id,
-                            filename=best_match
-                        )
-                
-                # Fallback to first available .gguf file if no quantized version found
-                if files:
-                    print(f"No quantized version found, using: {files[0]}")
-                    return hf_hub_download(
-                        repo_id=repo_id,
-                        filename=files[0]
-                    )
-                    
-                raise ValueError(f"Could not find any GGUF model file in repository {repo_id}")
-            except Exception as e:
-                raise ValueError(f"Error accessing repository {repo_id}: {str(e)}")
+            return name  # Return HF model ID directly
         else:
-            # Fallback to legacy model mapping for backward compatibility
+            # You could maintain a mapping of friendly names to HF model IDs
             model_mapping = {
-                "llama-3.1-8b-instruct": {
-                    "repo_id": "TheBloke/Llama-2-7B-Chat-GGUF",
-                    "filename": "llama-2-7b-chat.q4_K_M.gguf"
-                }
+                # Add any default model mappings here
+                "example-model": "organization/model-name"
             }
             if name not in model_mapping:
                 raise ValueError(f"Unknown model name: {name}")
-            config = model_mapping[name]
-            repo_id = config["repo_id"]
-            filename = config["filename"]
-            
-            return hf_hub_download(
-                repo_id=repo_id,
-                filename=filename
-            )
+            return model_mapping[name]
     
     raise ValueError("Either name or model_path must be provided")
 
