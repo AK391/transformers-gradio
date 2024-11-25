@@ -12,20 +12,6 @@ from transformers import TextIteratorStreamer
 __version__ = "0.0.1"
 
 
-def install_flash_attention():
-    try:
-        import flash_attn
-    except ImportError:
-        print("Installing flash-attn...")
-        env = os.environ.copy()
-        env['FLASH_ATTENTION_SKIP_CUDA_BUILD'] = "TRUE"
-        subprocess.run(
-            'pip install flash-attn --no-build-isolation',
-            env=env,
-            shell=True,
-            check=True
-        )
-
 
 def get_fn(model_path: str, **model_kwargs):
     """Create a chat function with the specified model."""
@@ -38,10 +24,15 @@ def get_fn(model_path: str, **model_kwargs):
     )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    
+    # Simple flash-attention installation attempt
     try:
-        # Attempt to install flash attention if not present
-        install_flash_attention()
-        
+        subprocess.run(
+            'pip install flash-attn --no-build-isolation',
+            env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
+            shell=True,
+            check=True
+        )
         # Try loading model with flash attention
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
