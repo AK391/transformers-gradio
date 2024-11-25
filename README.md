@@ -1,52 +1,63 @@
-# `llama-cpp-python-gradio`
+# `transformers-gradio`
 
-is a Python package that makes it easy for developers to create machine learning apps powered by llama.cpp models using Gradio.
+is a Python package that makes it easy for developers to create machine learning apps powered by 🤗 Transformers models using Gradio.
 
 # Installation
 
-You can install `llama-cpp-python-gradio` directly using pip:
+You can install `transformers-gradio` directly using pip:
 
 ```bash
-pip install llama-cpp-python-gradio
+pip install transformers-gradio
 ```
 
 # Basic Usage
 
-First, you'll need a GGUF model file for llama.cpp. Then in a Python file, write:
+First, you'll need a Hugging Face model. Then in a Python file, write:
 
 ```python
 import gradio as gr
-import llama_cpp_python_gradio
+from transformers_gradio import TransformersGradio
 
 gr.load(
-    model_path='path/to/your/model.gguf',
-    src=llama_cpp_python_gradio.registry,
+    model_path='organization/model-name',  # Hugging Face model ID
+    src=TransformersGradio.registry,
 ).launch()
 ```
 
-Run the Python file, and you should see a Gradio Interface connected to your local llama.cpp model!
+Run the Python file, and you should see a Gradio Interface connected to your local 🤗 Transformers model!
 
 # Customization 
 
-You can customize the interface by passing additional arguments to the Llama constructor:
+The interface includes several parameters that can be adjusted through the UI:
+
+- System prompt
+- Temperature (0-1)
+- Max new tokens (128-4096)
+- Top K sampling (1-80)
+- Repetition penalty (0-2)
+- Top P sampling (0-1)
+
+The model uses 4-bit quantization by default and will attempt to use Flash Attention 2 if available, falling back to standard attention if the installation fails.
 
 ```python
 import gradio as gr
-import llama_cpp_python_gradio
+from transformers_gradio import TransformersGradio
 
 gr.load(
-    model_path='path/to/your/model.gguf',
-    src=llama_cpp_python_gradio.registry,
-    n_ctx=2048,  # context window size
-    n_gpu_layers=1  # number of layers to offload to GPU
+    model_path='organization/model-name',
+    src=TransformersGradio.registry,
+    # Add any additional model kwargs here
 ).launch()
 ```
 
 # Under the Hood
 
-The `llama-cpp-python-gradio` library has two main dependencies: `llama-cpp-python` and `gradio`. It provides a "registry" function that creates a Gradio ChatInterface connected to your local llama.cpp model.
-
-The interface supports both text and image inputs (for multimodal models), with automatic handling of file uploads and base64 encoding.
+The library uses 🤗 Transformers with the following features:
+- 4-bit quantization using bitsandbytes
+- Automatic Flash Attention 2 installation attempt
+- Streaming token generation
+- ChatML formatting for conversations
+- Support for both text and image inputs (for multimodal models)
 
 -------
 
