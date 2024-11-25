@@ -22,12 +22,22 @@ def get_fn(model_path: str, **model_kwargs):
     )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        device_map="auto",
-        quantization_config=quantization_config,
-        attn_implementation="flash_attention_2",
-    )
+    try:
+        # First try with flash attention
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map="auto",
+            quantization_config=quantization_config,
+            attn_implementation="flash_attention_2",
+        )
+    except Exception as e:
+        print(f"Flash Attention failed, falling back to default attention: {str(e)}")
+        # Fallback to default attention implementation
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map="auto",
+            quantization_config=quantization_config,
+        )
 
     def predict(
         message: str,
