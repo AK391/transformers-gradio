@@ -1,4 +1,5 @@
 import os
+import subprocess
 from huggingface_hub import hf_hub_download, list_repo_files
 import gradio as gr
 from typing import Callable
@@ -9,6 +10,21 @@ from threading import Thread
 from transformers import TextIteratorStreamer
 
 __version__ = "0.0.1"
+
+
+def install_flash_attention():
+    try:
+        import flash_attn
+    except ImportError:
+        print("Installing flash-attn...")
+        env = os.environ.copy()
+        env['FLASH_ATTENTION_SKIP_CUDA_BUILD'] = "TRUE"
+        subprocess.run(
+            'pip install flash-attn --no-build-isolation',
+            env=env,
+            shell=True,
+            check=True
+        )
 
 
 def get_fn(model_path: str, **model_kwargs):
@@ -23,7 +39,10 @@ def get_fn(model_path: str, **model_kwargs):
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     try:
-        # First try with flash attention
+        # Attempt to install flash attention if not present
+        install_flash_attention()
+        
+        # Try loading model with flash attention
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map="auto",
