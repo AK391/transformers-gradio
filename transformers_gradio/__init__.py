@@ -199,22 +199,23 @@ def registry(name: str = None, model_path: str = None, **kwargs):
     """Create a Gradio Interface with similar styling and parameters."""
     
     model_path = get_model_path(name, model_path)
+    
+    # Wrap the get_fn to include default parameters
     fn = get_fn(model_path, **kwargs)
+    def wrapped_fn(message: str, history):
+        return fn(
+            message,
+            history,
+            system_prompt="You are a helpful AI assistant.",
+            temperature=0.7,
+            max_new_tokens=1024,
+            top_k=40,
+            repetition_penalty=1.1,
+            top_p=0.95
+        )
 
     interface = gr.ChatInterface(
-        fn=fn,
-        additional_inputs_accordion=gr.Accordion("⚙️ Parameters", open=False),
-        additional_inputs=[
-            gr.Textbox(
-                "You are a helpful AI assistant.",
-                label="System prompt"
-            ),
-            gr.Slider(0, 1, 0.7, label="Temperature"),
-            gr.Slider(128, 4096, 1024, label="Max new tokens"),
-            gr.Slider(1, 80, 40, label="Top K sampling"),
-            gr.Slider(0, 2, 1.1, label="Repetition penalty"),
-            gr.Slider(0, 1, 0.95, label="Top P sampling"),
-        ],
+        fn=wrapped_fn,
     )
     
     return interface
