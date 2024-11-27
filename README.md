@@ -16,12 +16,12 @@ First, you'll need a Hugging Face model. Then in a Python file, write:
 
 ```python
 import gradio as gr
-from transformers_gradio import registry
+import transformers_gradio
 
-interface = registry(
-    model_path='organization/model-name'  # Hugging Face model ID
-)
-interface.launch()
+gr.load(
+    name='organization/model-name',  # Hugging Face model ID
+    src=transformers_gradio.registry,
+).launch()
 ```
 
 Run the Python file, and you should see a Gradio chat interface connected to your local 🤗 Transformers model!
