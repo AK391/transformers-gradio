@@ -18,38 +18,47 @@ def get_fn(model_path: str, **model_kwargs):
     
     # Initialize tokenizer and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
-    # Simple flash-attention installation attempt
-    try:
-        subprocess.run(
-            'pip install flash-attn --no-build-isolation',
-            env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
-            shell=True,
-            check=True
-        )
-        # Try loading model with flash attention
+    # Check if using OLMo model
+    is_olmo = "olmo" in model_path.lower()
+    
+    # Different loading configuration for OLMo models
+    if is_olmo:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map="auto",
-            quantization_config=quantization_config,
-            attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
         )
-    except Exception as e:
-        print(f"Flash Attention failed, falling back to default attention: {str(e)}")
-        # Fallback to default attention implementation
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            device_map="auto",
-            quantization_config=quantization_config,
-            torch_dtype=torch.bfloat16,
+    else:
+        # Original loading logic with flash attention attempt for other models
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16
         )
+        try:
+            subprocess.run(
+                'pip install flash-attn --no-build-isolation',
+                env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
+                shell=True,
+                check=True
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                quantization_config=quantization_config,
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.bfloat16,
+            )
+        except Exception as e:
+            print(f"Flash Attention failed, falling back to default attention: {str(e)}")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                quantization_config=quantization_config,
+                torch_dtype=torch.bfloat16,
+            )
 
     def predict(
         message: str,
