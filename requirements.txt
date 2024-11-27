@@ -1,4 +1,4 @@
-git+https://github.com/huggingface/transformers.git
+git+https://github.com/huggingface/transformers.git@main
 gradio>=5.5.0
 bitsandbytes
 optimum
