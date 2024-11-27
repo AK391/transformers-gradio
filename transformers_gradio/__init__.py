@@ -39,6 +39,7 @@ def get_fn(model_path: str, **model_kwargs):
             device_map="auto",
             quantization_config=quantization_config,
             attn_implementation="flash_attention_2",
+            torch_dtype=torch.bfloat16,
         )
     except Exception as e:
         print(f"Flash Attention failed, falling back to default attention: {str(e)}")
@@ -47,6 +48,7 @@ def get_fn(model_path: str, **model_kwargs):
             model_path,
             device_map="auto",
             quantization_config=quantization_config,
+            torch_dtype=torch.bfloat16,
         )
 
     def predict(
@@ -60,11 +62,32 @@ def get_fn(model_path: str, **model_kwargs):
         top_p: float
     ):
         try:
-            # Format conversation with ChatML format
-            instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
-            for user_msg, assistant_msg in history:
-                instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
-            instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
+            # Check if using Tulu or OLMo model
+            is_tulu = "tulu" in model_path.lower()
+            is_olmo = "olmo" in model_path.lower()
+            
+            if is_tulu:
+                # Format conversation for Tulu models
+                messages = [{"role": "system", "content": system_prompt}]
+                for user_msg, assistant_msg in history:
+                    messages.append({"role": "user", "content": user_msg})
+                    messages.append({"role": "assistant", "content": assistant_msg})
+                messages.append({"role": "user", "content": message})
+                
+                # Convert messages to string format
+                instruction = tokenizer.apply_chat_template(messages, tokenize=False)
+            elif is_olmo:
+                # Format conversation for OLMo models
+                instruction = f"<|endoftext|><|user|>\n{system_prompt}\n<|assistant|>\n"
+                for user_msg, assistant_msg in history:
+                    instruction += f"<|endoftext|><|user|>\n{user_msg}\n<|assistant|>\n{assistant_msg}"
+                instruction += f"<|endoftext|><|user|>\n{message}\n<|assistant|>\n"
+            else:
+                # Original ChatML format
+                instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
+                for user_msg, assistant_msg in history:
+                    instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
+                instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
 
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             enc = tokenizer(instruction, return_tensors="pt", padding=True, truncation=True)
@@ -181,12 +204,12 @@ def get_model_path(name: str = None, model_path: str = None) -> str:
     
     if name:
         if "/" in name:
-            return name  # Return HF model ID directly
+            return name
         else:
-            # You could maintain a mapping of friendly names to HF model IDs
             model_mapping = {
-                # Add any default model mappings here
-                "example-model": "organization/model-name"
+                "tulu-3": "allenai/llama-tulu-3-8b",
+                "olmo-2-13b": "allenai/OLMo-2-1124-13B-Instruct",
+                # ... other mappings ...
             }
             if name not in model_mapping:
                 raise ValueError(f"Unknown model name: {name}")
