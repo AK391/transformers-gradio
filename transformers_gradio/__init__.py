@@ -5,7 +5,7 @@ import gradio as gr
 from typing import Callable
 import base64
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoConfig
 from threading import Thread
 from transformers import TextIteratorStreamer
 from transformers import AutoProcessor, AutoModelForVision2Seq
@@ -22,8 +22,13 @@ def get_fn(model_path: str, **model_kwargs):
     # Initialize tokenizer and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Check if using SmolVLM or Idefics model
-    is_vision_model = any(model_name in model_path.lower() for model_name in ["smolvlm", "idefics"])
+    config = AutoConfig.from_pretrained(model_path)
+    
+    # Determine if the model is a vision model based on its configuration
+    if hasattr(config, 'is_vision_model') and config.is_vision_model:
+        is_vision_model = True
+    else:
+        is_vision_model = False
     
     if is_vision_model:
         processor = AutoProcessor.from_pretrained(model_path)
@@ -31,7 +36,7 @@ def get_fn(model_path: str, **model_kwargs):
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            _attn_implementation="flash_attention_2" if device == "cuda" else "eager",
+            _attn_implementation="flash_attention_2" if device.type == "cuda" else "eager",
         )
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -39,7 +44,6 @@ def get_fn(model_path: str, **model_kwargs):
         # Check if using OLMo model
         is_olmo = "olmo" in model_path.lower()
         
-        # Different loading configuration for OLMo models
         if is_olmo:
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
