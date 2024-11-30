@@ -93,47 +93,43 @@ def get_fn(model_path: str, **model_kwargs):
             
             if is_smolvlm:
                 # Format conversation for SmolVLM
-                messages = [{"role": "system", "content": system_prompt}]
-                for user_msg, assistant_msg in history:
-                    content = []
-                    if isinstance(user_msg, dict) and user_msg.get("files"):
-                        # Handle images in the message
-                        for file in user_msg["files"]:
-                            content.append({"type": "image", "image": Image.open(file)})
-                        if user_msg.get("text"):
-                            content.append({"type": "text", "text": user_msg["text"]})
-                    else:
-                        content.append({"type": "text", "text": user_msg})
-                    messages.append({"role": "user", "content": content})
-                    messages.append({"role": "assistant", "content": assistant_msg})
+                messages = [{"role": "user", "content": []}]
                 
-                # Handle current message
-                content = []
+                # Handle current message with multiple images
                 if isinstance(message, dict) and message.get("files"):
                     for file in message["files"]:
-                        content.append({"type": "image", "image": Image.open(file)})
+                        img = Image.open(file).convert("RGB")
+                        messages[0]["content"].append({"type": "image", "image": img})
                     if message.get("text"):
-                        content.append({"type": "text", "text": message["text"]})
+                        messages[0]["content"].append({"type": "text", "text": message["text"]})
                 else:
-                    content.append({"type": "text", "text": message})
-                messages.append({"role": "user", "content": content})
+                    messages[0]["content"].append({"type": "text", "text": message})
                 
                 # Process inputs
                 prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-                inputs = processor(text=prompt, return_tensors="pt").to(device)
+                inputs = processor(text=prompt, images=[messages[0]["content"][0]["image"] if messages[0]["content"][0]["type"] == "image" else None], return_tensors="pt").to(device)
                 
-                # Generate response
-                generated_ids = model.generate(
+                # Set up streamer
+                streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
+                generation_kwargs = dict(
                     **inputs,
+                    streamer=streamer,
                     do_sample=True,
                     temperature=temperature,
                     max_new_tokens=max_new_tokens,
-                    top_k=top_k,
                     repetition_penalty=repetition_penalty,
                     top_p=top_p
                 )
-                response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                yield response.strip()
+
+                # Generate in a thread
+                thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                thread.start()
+
+                # Stream the output
+                response_text = ""
+                for new_text in streamer:
+                    response_text += new_text
+                    yield response_text.strip()
                 
             else:
                 # Check if using Tulu or OLMo model
