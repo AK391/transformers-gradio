@@ -22,10 +22,10 @@ def get_fn(model_path: str, **model_kwargs):
     # Initialize tokenizer and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Check if using SmolVLM model
-    is_smolvlm = "smolvlm" in model_path.lower()
+    # Check if using SmolVLM or Idefics model
+    is_vision_model = any(model_name in model_path.lower() for model_name in ["smolvlm", "idefics"])
     
-    if is_smolvlm:
+    if is_vision_model:
         processor = AutoProcessor.from_pretrained(model_path)
         model = AutoModelForVision2Seq.from_pretrained(
             model_path,
