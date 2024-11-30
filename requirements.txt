@@ -3,3 +3,4 @@ gradio>=5.5.0
 bitsandbytes
 optimum
 accelerate
+Pillow

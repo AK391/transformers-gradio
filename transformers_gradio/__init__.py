@@ -8,6 +8,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from threading import Thread
 from transformers import TextIteratorStreamer
+from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers.image_utils import load_image
+from PIL import Image
 
 __version__ = "0.0.1"
 
@@ -19,46 +22,58 @@ def get_fn(model_path: str, **model_kwargs):
     # Initialize tokenizer and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    # Check if using SmolVLM model
+    is_smolvlm = "smolvlm" in model_path.lower()
     
-    # Check if using OLMo model
-    is_olmo = "olmo" in model_path.lower()
-    
-    # Different loading configuration for OLMo models
-    if is_olmo:
-        model = AutoModelForCausalLM.from_pretrained(
+    if is_smolvlm:
+        processor = AutoProcessor.from_pretrained(model_path)
+        model = AutoModelForVision2Seq.from_pretrained(
             model_path,
-            device_map="auto",
             torch_dtype=torch.bfloat16,
+            device_map="auto",
+            _attn_implementation="flash_attention_2" if device == "cuda" else "eager",
         )
     else:
-        # Original loading logic with flash attention attempt for other models
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16
-        )
-        try:
-            subprocess.run(
-                'pip install flash-attn --no-build-isolation',
-                env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
-                shell=True,
-                check=True
-            )
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        
+        # Check if using OLMo model
+        is_olmo = "olmo" in model_path.lower()
+        
+        # Different loading configuration for OLMo models
+        if is_olmo:
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map="auto",
-                quantization_config=quantization_config,
-                attn_implementation="flash_attention_2",
                 torch_dtype=torch.bfloat16,
             )
-        except Exception as e:
-            print(f"Flash Attention failed, falling back to default attention: {str(e)}")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                device_map="auto",
-                quantization_config=quantization_config,
-                torch_dtype=torch.bfloat16,
+        else:
+            # Original loading logic with flash attention attempt for other models
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16
             )
+            try:
+                subprocess.run(
+                    'pip install flash-attn --no-build-isolation',
+                    env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
+                    shell=True,
+                    check=True
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    device_map="auto",
+                    quantization_config=quantization_config,
+                    attn_implementation="flash_attention_2",
+                    torch_dtype=torch.bfloat16,
+                )
+            except Exception as e:
+                print(f"Flash Attention failed, falling back to default attention: {str(e)}")
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    device_map="auto",
+                    quantization_config=quantization_config,
+                    torch_dtype=torch.bfloat16,
+                )
 
     def predict(
         message: str,
@@ -71,63 +86,116 @@ def get_fn(model_path: str, **model_kwargs):
         top_p: float
     ):
         try:
-            # Check if using Tulu or OLMo model
+            # Check model type
             is_tulu = "tulu" in model_path.lower()
             is_olmo = "olmo" in model_path.lower()
+            is_smolvlm = "smolvlm" in model_path.lower()
             
-            if is_tulu:
-                # Format conversation for Tulu models
+            if is_smolvlm:
+                # Format conversation for SmolVLM
                 messages = [{"role": "system", "content": system_prompt}]
                 for user_msg, assistant_msg in history:
-                    messages.append({"role": "user", "content": user_msg})
+                    content = []
+                    if isinstance(user_msg, dict) and user_msg.get("files"):
+                        # Handle images in the message
+                        for file in user_msg["files"]:
+                            content.append({"type": "image", "image": Image.open(file)})
+                        if user_msg.get("text"):
+                            content.append({"type": "text", "text": user_msg["text"]})
+                    else:
+                        content.append({"type": "text", "text": user_msg})
+                    messages.append({"role": "user", "content": content})
                     messages.append({"role": "assistant", "content": assistant_msg})
-                messages.append({"role": "user", "content": message})
                 
-                # Convert messages to string format
-                instruction = tokenizer.apply_chat_template(messages, tokenize=False)
-            elif is_olmo:
-                # Format conversation for OLMo models
-                instruction = f"<|endoftext|><|user|>\n{system_prompt}\n<|assistant|>\n"
-                for user_msg, assistant_msg in history:
-                    instruction += f"<|endoftext|><|user|>\n{user_msg}\n<|assistant|>\n{assistant_msg}"
-                instruction += f"<|endoftext|><|user|>\n{message}\n<|assistant|>\n"
+                # Handle current message
+                content = []
+                if isinstance(message, dict) and message.get("files"):
+                    for file in message["files"]:
+                        content.append({"type": "image", "image": Image.open(file)})
+                    if message.get("text"):
+                        content.append({"type": "text", "text": message["text"]})
+                else:
+                    content.append({"type": "text", "text": message})
+                messages.append({"role": "user", "content": content})
+                
+                # Process inputs
+                prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+                inputs = processor(text=prompt, return_tensors="pt").to(device)
+                
+                # Generate response
+                generated_ids = model.generate(
+                    **inputs,
+                    do_sample=True,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p
+                )
+                response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                yield response.strip()
+                
             else:
-                # Original ChatML format
-                instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
-                for user_msg, assistant_msg in history:
-                    instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
-                instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
+                # Check if using Tulu or OLMo model
+                is_tulu = "tulu" in model_path.lower()
+                is_olmo = "olmo" in model_path.lower()
+                
+                if is_tulu:
+                    # Format conversation for Tulu models
+                    messages = [{"role": "system", "content": system_prompt}]
+                    for user_msg, assistant_msg in history:
+                        messages.append({"role": "user", "content": user_msg})
+                        messages.append({"role": "assistant", "content": assistant_msg})
+                    messages.append({"role": "user", "content": message})
+                    
+                    # Convert messages to string format
+                    instruction = tokenizer.apply_chat_template(messages, tokenize=False)
+                elif is_olmo:
+                    # Format conversation for OLMo models
+                    instruction = f"<|endoftext|><|user|>\n{system_prompt}\n<|assistant|>\n"
+                    for user_msg, assistant_msg in history:
+                        instruction += f"<|endoftext|><|user|>\n{user_msg}\n<|assistant|>\n{assistant_msg}"
+                    instruction += f"<|endoftext|><|user|>\n{message}\n<|assistant|>\n"
+                else:
+                    # Original ChatML format
+                    instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
+                    for user_msg, assistant_msg in history:
+                        instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
+                    instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
 
-            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-            enc = tokenizer(instruction, return_tensors="pt", padding=True, truncation=True)
-            input_ids, attention_mask = enc.input_ids, enc.attention_mask
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                enc = tokenizer(instruction, return_tensors="pt", padding=True, truncation=True)
+                input_ids, attention_mask = enc.input_ids, enc.attention_mask
 
-            # Truncate if needed
-            if input_ids.shape[1] > 8192:  # Using n_ctx from original
-                input_ids = input_ids[:, -8192:]
-                attention_mask = attention_mask[:, -8192:]
+                # Truncate if needed
+                if input_ids.shape[1] > 8192:  # Using n_ctx from original
+                    input_ids = input_ids[:, -8192:]
+                    attention_mask = attention_mask[:, -8192:]
 
-            generate_kwargs = dict(
-                input_ids=input_ids.to(device),
-                attention_mask=attention_mask.to(device),
-                streamer=streamer,
-                do_sample=True,
-                temperature=temperature,
-                max_new_tokens=max_new_tokens,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                top_p=top_p
-            )
+                generate_kwargs = dict(
+                    input_ids=input_ids.to(device),
+                    attention_mask=attention_mask.to(device),
+                    streamer=streamer,
+                    do_sample=True,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p
+                )
 
-            t = Thread(target=model.generate, kwargs=generate_kwargs)
-            t.start()
+                t = Thread(target=model.generate, kwargs=generate_kwargs)
+                t.start()
 
-            response_text = ""
-            for new_token in streamer:
-                if new_token in ["<|endoftext|>", "<|im_end|>"]:
-                    break
-                response_text += new_token
-                yield response_text.strip()
+                response_text = ""
+                for new_token in streamer:
+                    if new_token in ["<|endoftext|>", "<|im_end|>"]:
+                        break
+                    response_text += new_token
+                    yield response_text.strip()
+
+                if not response_text.strip():
+                    yield "I apologize, but I was unable to generate a response. Please try again."
 
             if not response_text.strip():
                 yield "I apologize, but I was unable to generate a response. Please try again."
@@ -218,6 +286,7 @@ def get_model_path(name: str = None, model_path: str = None) -> str:
             model_mapping = {
                 "tulu-3": "allenai/llama-tulu-3-8b",
                 "olmo-2-13b": "allenai/OLMo-2-1124-13B-Instruct",
+                "smolvlm": "HuggingFaceTB/SmolVLM-Instruct",  # Add SmolVLM mapping
                 # ... other mappings ...
             }
             if name not in model_mapping:
