@@ -19,12 +19,10 @@ __version__ = "0.0.1"
 def get_fn(model_path: str, **model_kwargs):
     """Create a chat function with the specified model."""
     
-    # Initialize tokenizer and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
     config = AutoConfig.from_pretrained(model_path)
     
-    # Determine if the model is a vision model based on its configuration or name
+    # Determine if the model is a vision model
     is_vision_model = (
         (hasattr(config, 'is_vision_model') and config.is_vision_model) or
         "idefics" in model_path.lower() or
@@ -37,8 +35,7 @@ def get_fn(model_path: str, **model_kwargs):
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            _attn_implementation="flash_attention_2" if device.type == "cuda" else "eager",
-        )
+        ).to(device)
         
         def predict(
             message: str,
@@ -51,51 +48,72 @@ def get_fn(model_path: str, **model_kwargs):
             top_p: float
         ):
             try:
-                # Format conversation for SmolVLM
-                messages = [{"role": "user", "content": []}]
+                yield "..."
                 
-                # Handle current message with multiple images
-                if isinstance(message, dict) and message.get("files"):
-                    for file in message["files"]:
-                        img = Image.open(file).convert("RGB")
-                        messages[0]["content"].append({"type": "image", "image": img})
-                    if message.get("text"):
-                        messages[0]["content"].append({"type": "text", "text": message["text"]})
+                # Handle input format
+                if isinstance(message, dict):
+                    text = message.get("text", "")
+                    files = message.get("files", [])
+                    
+                    # Process images
+                    if len(files) > 1:
+                        images = [Image.open(image).convert("RGB") for image in files]
+                    elif len(files) == 1:
+                        images = [Image.open(files[0]).convert("RGB")]
+                    else:
+                        images = []
                 else:
-                    messages[0]["content"].append({"type": "text", "text": message})
-                
-                # Process inputs
-                prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-                inputs = processor(
-                    text=prompt, 
-                    images=[content["image"] for content in messages[0]["content"] if content["type"] == "image"],
-                    return_tensors="pt"
-                ).to(device)
-                
+                    text = message
+                    images = []
+
+                # Input validation
+                if text == "" and not images:
+                    raise gr.Error("Please input a query and optionally image(s).")
+                if text == "" and images:
+                    raise gr.Error("Please input a text query along the image(s).")
+
+                # Format messages
+                resulting_messages = [{
+                    "role": "user",
+                    "content": [{"type": "image"} for _ in range(len(images))] + [
+                        {"type": "text", "text": text}
+                    ]
+                }]
+
+                # Prepare inputs
+                prompt = processor.apply_chat_template(resulting_messages, add_generation_prompt=True)
+                inputs = processor(text=prompt, images=[images], return_tensors="pt")
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+
+                # Set up generation args
+                generation_args = {
+                    "max_new_tokens": max_new_tokens,
+                    "repetition_penalty": repetition_penalty,
+                }
+
+                # Handle decoding strategy
+                if temperature == 0:  # Greedy
+                    generation_args["do_sample"] = False
+                else:  # Top P Sampling
+                    generation_args["temperature"] = temperature
+                    generation_args["do_sample"] = True
+                    generation_args["top_p"] = top_p
+
+                generation_args.update(inputs)
+
                 # Set up streamer
                 streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
-                generation_kwargs = dict(
-                    **inputs,
-                    streamer=streamer,
-                    do_sample=True,
-                    temperature=temperature,
-                    max_new_tokens=max_new_tokens,
-                    repetition_penalty=repetition_penalty,
-                    top_p=top_p
-                )
+                generation_args = dict(inputs, streamer=streamer, max_new_tokens=max_new_tokens)
 
                 # Generate in a thread
-                thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                thread = Thread(target=model.generate, kwargs=generation_args)
                 thread.start()
 
                 # Stream the output
-                response_text = ""
+                buffer = ""
                 for new_text in streamer:
-                    response_text += new_text
-                    yield response_text.strip()
-
-                if not response_text.strip():
-                    yield "I apologize, but I was unable to generate a response. Please try again."
+                    buffer += new_text
+                    yield buffer.strip()
 
             except Exception as e:
                 print(f"Error during generation: {str(e)}")
