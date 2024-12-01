@@ -24,11 +24,11 @@ def get_fn(model_path: str, **model_kwargs):
     
     config = AutoConfig.from_pretrained(model_path)
     
-    # Determine if the model is a vision model based on its configuration
-    if hasattr(config, 'is_vision_model') and config.is_vision_model:
-        is_vision_model = True
-    else:
-        is_vision_model = False
+    # Determine if the model is a vision model based on its configuration or name
+    is_vision_model = (
+        (hasattr(config, 'is_vision_model') and config.is_vision_model) or
+        "idefics" in model_path.lower()
+    )
     
     if is_vision_model:
         processor = AutoProcessor.from_pretrained(model_path)
