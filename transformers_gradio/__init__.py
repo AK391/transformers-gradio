@@ -27,7 +27,8 @@ def get_fn(model_path: str, **model_kwargs):
     # Determine if the model is a vision model based on its configuration or name
     is_vision_model = (
         (hasattr(config, 'is_vision_model') and config.is_vision_model) or
-        "idefics" in model_path.lower()
+        "idefics" in model_path.lower() or
+        "smolvlm" in model_path.lower()
     )
     
     if is_vision_model:
@@ -38,46 +39,125 @@ def get_fn(model_path: str, **model_kwargs):
             device_map="auto",
             _attn_implementation="flash_attention_2" if device.type == "cuda" else "eager",
         )
+        
+        def predict(
+            message: str,
+            history,
+            system_prompt: str,
+            temperature: float,
+            max_new_tokens: int,
+            top_k: int,
+            repetition_penalty: float,
+            top_p: float
+        ):
+            try:
+                # Format conversation for SmolVLM
+                messages = [{"role": "user", "content": []}]
+                
+                # Handle current message with multiple images
+                if isinstance(message, dict) and message.get("files"):
+                    for file in message["files"]:
+                        img = Image.open(file).convert("RGB")
+                        messages[0]["content"].append({"type": "image", "image": img})
+                    if message.get("text"):
+                        messages[0]["content"].append({"type": "text", "text": message["text"]})
+                else:
+                    messages[0]["content"].append({"type": "text", "text": message})
+                
+                # Process inputs
+                prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+                inputs = processor(
+                    text=prompt, 
+                    images=[content["image"] for content in messages[0]["content"] if content["type"] == "image"],
+                    return_tensors="pt"
+                ).to(device)
+                
+                # Set up streamer
+                streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
+                generation_kwargs = dict(
+                    **inputs,
+                    streamer=streamer,
+                    do_sample=True,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p
+                )
+
+                # Generate in a thread
+                thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                thread.start()
+
+                # Stream the output
+                response_text = ""
+                for new_text in streamer:
+                    response_text += new_text
+                    yield response_text.strip()
+
+                if not response_text.strip():
+                    yield "I apologize, but I was unable to generate a response. Please try again."
+
+            except Exception as e:
+                print(f"Error during generation: {str(e)}")
+                yield f"An error occurred: {str(e)}"
+                
+        return predict
+
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        # Determine if the model is a vision model based on its configuration or name
+        is_vision_model = (
+            (hasattr(config, 'is_vision_model') and config.is_vision_model) or
+            "idefics" in model_path.lower()
+        )
         
-        # Check if using OLMo model
-        is_olmo = "olmo" in model_path.lower()
-        
-        if is_olmo:
-            model = AutoModelForCausalLM.from_pretrained(
+        if is_vision_model:
+            processor = AutoProcessor.from_pretrained(model_path)
+            model = AutoModelForVision2Seq.from_pretrained(
                 model_path,
-                device_map="auto",
                 torch_dtype=torch.bfloat16,
+                device_map="auto",
+                _attn_implementation="flash_attention_2" if device.type == "cuda" else "eager",
             )
         else:
-            # Original loading logic with flash attention attempt for other models
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16
-            )
-            try:
-                subprocess.run(
-                    'pip install flash-attn --no-build-isolation',
-                    env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
-                    shell=True,
-                    check=True
-                )
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
+            
+            # Check if using OLMo model
+            is_olmo = "olmo" in model_path.lower()
+            
+            if is_olmo:
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
                     device_map="auto",
-                    quantization_config=quantization_config,
-                    attn_implementation="flash_attention_2",
                     torch_dtype=torch.bfloat16,
                 )
-            except Exception as e:
-                print(f"Flash Attention failed, falling back to default attention: {str(e)}")
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    device_map="auto",
-                    quantization_config=quantization_config,
-                    torch_dtype=torch.bfloat16,
+            else:
+                # Original loading logic with flash attention attempt for other models
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16
                 )
+                try:
+                    subprocess.run(
+                        'pip install flash-attn --no-build-isolation',
+                        env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
+                        shell=True,
+                        check=True
+                    )
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        device_map="auto",
+                        quantization_config=quantization_config,
+                        attn_implementation="flash_attention_2",
+                        torch_dtype=torch.bfloat16,
+                    )
+                except Exception as e:
+                    print(f"Flash Attention failed, falling back to default attention: {str(e)}")
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        device_map="auto",
+                        quantization_config=quantization_config,
+                        torch_dtype=torch.bfloat16,
+                    )
 
     def predict(
         message: str,
