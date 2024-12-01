@@ -402,6 +402,7 @@ def registry(name: str = None, model_path: str = None, **kwargs):
 
     interface = gr.ChatInterface(
         fn=fn,
+        multimodal=True,  # Enable multimodal input
         additional_inputs_accordion=gr.Accordion("⚙️ Parameters", open=False),
         additional_inputs=[
             gr.Textbox(
