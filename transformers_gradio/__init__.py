@@ -11,7 +11,7 @@ from transformers import TextIteratorStreamer
 from transformers import AutoProcessor, AutoModelForVision2Seq
 from transformers.image_utils import load_image
 from PIL import Image
-from transformers import PaliGemmaForConditionalGeneration
+from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 
 __version__ = "0.0.1"
 
@@ -41,6 +41,7 @@ def get_fn(model_path: str, **model_kwargs):
                 torch_dtype=torch.bfloat16,
                 device_map="auto",
             ).to(device)
+            processor = PaliGemmaProcessor.from_pretrained(model_path)
         else:
             model = AutoModelForVision2Seq.from_pretrained(
                 model_path,
@@ -83,18 +84,8 @@ def get_fn(model_path: str, **model_kwargs):
                 if text == "" and images:
                     raise gr.Error("Please input a text query along the image(s).")
 
-                # Format messages
-                resulting_messages = [{
-                    "role": "user",
-                    "content": [{"type": "image"} for _ in range(len(images))] + [
-                        {"type": "text", "text": text}
-                    ]
-                }]
-
-                # Prepare inputs
-                prompt = processor.apply_chat_template(resulting_messages, add_generation_prompt=True)
-                inputs = processor(text=prompt, images=[images], return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items()}
+                # Prepare inputs without chat template
+                inputs = processor(text=text, images=images, return_tensors="pt").to(torch.bfloat16).to(device)
 
                 # Set up generation args
                 generation_args = {
