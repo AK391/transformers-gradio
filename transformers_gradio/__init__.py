@@ -34,7 +34,7 @@ def get_fn(model_path: str, **model_kwargs):
     if is_vision_model:
         processor = AutoProcessor.from_pretrained(model_path)
         
-        # Update model loading to handle PaliGemma
+        # Set a chat template for PaliGemma
         if "paligemma" in model_path.lower():
             model = PaliGemmaForConditionalGeneration.from_pretrained(
                 model_path,
