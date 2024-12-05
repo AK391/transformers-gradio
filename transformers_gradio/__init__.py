@@ -11,6 +11,7 @@ from transformers import TextIteratorStreamer
 from transformers import AutoProcessor, AutoModelForVision2Seq
 from transformers.image_utils import load_image
 from PIL import Image
+from transformers import PaliGemmaForConditionalGeneration
 
 __version__ = "0.0.1"
 
@@ -26,16 +27,26 @@ def get_fn(model_path: str, **model_kwargs):
     is_vision_model = (
         (hasattr(config, 'is_vision_model') and config.is_vision_model) or
         "idefics" in model_path.lower() or
-        "smolvlm" in model_path.lower()
+        "smolvlm" in model_path.lower() or
+        "paligemma" in model_path.lower()
     )
     
     if is_vision_model:
         processor = AutoProcessor.from_pretrained(model_path)
-        model = AutoModelForVision2Seq.from_pretrained(
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        ).to(device)
+        
+        # Update model loading to handle PaliGemma
+        if "paligemma" in model_path.lower():
+            model = PaliGemmaForConditionalGeneration.from_pretrained(
+                model_path,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            ).to(device)
+        else:
+            model = AutoModelForVision2Seq.from_pretrained(
+                model_path,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            ).to(device)
         
         def predict(
             message: str,
