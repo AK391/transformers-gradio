@@ -102,6 +102,7 @@ def get_fn(model_path: str, **model_kwargs):
     
     if is_vision_model:
         model, processor = load_vision_model(model_path, device)
+        tokenizer = processor
     else:
         model, tokenizer = load_text_model(model_path, device)
 

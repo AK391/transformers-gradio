@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     "gradio>=5.5.0",
     "transformers @ git+https://github.com/huggingface/transformers.git",
-    "bitsandbytes",
+    "bitsandbytes==0.44.1",
     "accelerate",
     "optimum",
     "Pillow",

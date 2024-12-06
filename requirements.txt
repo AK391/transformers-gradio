@@ -1,6 +1,6 @@
 git+https://github.com/huggingface/transformers.git
 gradio>=5.5.0
-bitsandbytes
+bitsandbytes==0.44.1
 optimum
 accelerate
 Pillow
