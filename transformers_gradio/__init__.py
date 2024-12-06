@@ -16,168 +16,94 @@ from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 __version__ = "0.0.1"
 
 
+def load_vision_model(model_path: str, device: str):
+    """Load vision-based models."""
+    if "paligemma" in model_path.lower():
+        model = PaliGemmaForConditionalGeneration.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            device_map="auto",
+        )
+        processor = PaliGemmaProcessor.from_pretrained(model_path)
+    else:
+        model = AutoModelForVision2Seq.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            device_map="auto",
+        )
+        processor = AutoProcessor.from_pretrained(model_path)
+    return model, processor
+
+def load_text_model(model_path: str, device: str):
+    """Load text-based models."""
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    
+    if "olmo" in model_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map="auto",
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        )
+    else:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16 if device == "cuda" else torch.float32
+        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                quantization_config=quantization_config,
+                attn_implementation="flash_attention_2" if device == "cuda" else None,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            )
+        except Exception as e:
+            print(f"Flash Attention failed, falling back to default attention: {str(e)}")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                quantization_config=quantization_config,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            )
+    return model, tokenizer
+
+def format_chat_history(message: str, history: list, system_prompt: str, model_path: str):
+    """Format chat history based on model type."""
+    if "tulu" in model_path.lower():
+        messages = [{"role": "system", "content": system_prompt}]
+        for user_msg, assistant_msg in history:
+            messages.append({"role": "user", "content": user_msg})
+            messages.append({"role": "assistant", "content": assistant_msg})
+        messages.append({"role": "user", "content": message})
+        return messages
+    elif "olmo" in model_path.lower():
+        instruction = f"<|endoftext|><|user|>\n{system_prompt}\n<|assistant|>\n"
+        for user_msg, assistant_msg in history:
+            instruction += f"<|endoftext|><|user|>\n{user_msg}\n<|assistant|>\n{assistant_msg}"
+        instruction += f"<|endoftext|><|user|>\n{message}\n<|assistant|>\n"
+        return instruction
+    else:
+        instruction = '<|im_start|>system\n' + system_prompt + '\n<|im_end|>\n'
+        for user_msg, assistant_msg in history:
+            instruction += f'<|im_start|>user\n{user_msg}\n<|im_end|>\n<|im_start|>assistant\n{assistant_msg}\n<|im_end|>\n'
+        instruction += f'<|im_start|>user\n{message}\n<|im_end|>\n<|im_start|>assistant\n'
+        return instruction
 
 def get_fn(model_path: str, **model_kwargs):
     """Create a chat function with the specified model."""
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     config = AutoConfig.from_pretrained(model_path)
     
     # Determine if the model is a vision model
     is_vision_model = (
         (hasattr(config, 'is_vision_model') and config.is_vision_model) or
-        "idefics" in model_path.lower() or
-        "smolvlm" in model_path.lower() or
-        "paligemma" in model_path.lower()
+        any(name in model_path.lower() for name in ["idefics", "smolvlm", "paligemma"])
     )
     
     if is_vision_model:
-        processor = AutoProcessor.from_pretrained(model_path)
-        
-        # Set a chat template for PaliGemma
-        if "paligemma" in model_path.lower():
-            model = PaliGemmaForConditionalGeneration.from_pretrained(
-                model_path,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-            ).to(device)
-            processor = PaliGemmaProcessor.from_pretrained(model_path)
-        else:
-            model = AutoModelForVision2Seq.from_pretrained(
-                model_path,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-            ).to(device)
-        
-        def predict(
-            message: str,
-            history,
-            system_prompt: str,
-            temperature: float,
-            max_new_tokens: int,
-            top_k: int,
-            repetition_penalty: float,
-            top_p: float
-        ):
-            try:
-                yield "..."
-                
-                # Handle input format
-                if isinstance(message, dict):
-                    text = message.get("text", "")
-                    files = message.get("files", [])
-                    
-                    # Process images
-                    if len(files) > 1:
-                        images = [Image.open(image).convert("RGB") for image in files]
-                    elif len(files) == 1:
-                        images = [Image.open(files[0]).convert("RGB")]
-                    else:
-                        images = []
-                else:
-                    text = message
-                    images = []
-
-                # Input validation
-                if text == "" and not images:
-                    raise gr.Error("Please input a query and optionally image(s).")
-                if text == "" and images:
-                    raise gr.Error("Please input a text query along the image(s).")
-
-                # Prepare inputs without chat template
-                inputs = processor(text=text, images=images, return_tensors="pt").to(torch.bfloat16).to(device)
-
-                # Set up generation args
-                generation_args = {
-                    "max_new_tokens": max_new_tokens,
-                    "repetition_penalty": repetition_penalty,
-                }
-
-                # Handle decoding strategy
-                if temperature == 0:  # Greedy
-                    generation_args["do_sample"] = False
-                else:  # Top P Sampling
-                    generation_args["temperature"] = temperature
-                    generation_args["do_sample"] = True
-                    generation_args["top_p"] = top_p
-
-                generation_args.update(inputs)
-
-                # Set up streamer
-                streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
-                generation_args = dict(inputs, streamer=streamer, max_new_tokens=max_new_tokens)
-
-                # Generate in a thread
-                thread = Thread(target=model.generate, kwargs=generation_args)
-                thread.start()
-
-                # Stream the output
-                buffer = ""
-                for new_text in streamer:
-                    buffer += new_text
-                    yield buffer.strip()
-
-            except Exception as e:
-                print(f"Error during generation: {str(e)}")
-                yield f"An error occurred: {str(e)}"
-                
-        return predict
-
+        model, processor = load_vision_model(model_path, device)
     else:
-        # Determine if the model is a vision model based on its configuration or name
-        is_vision_model = (
-            (hasattr(config, 'is_vision_model') and config.is_vision_model) or
-            "idefics" in model_path.lower()
-        )
-        
-        if is_vision_model:
-            processor = AutoProcessor.from_pretrained(model_path)
-            model = AutoModelForVision2Seq.from_pretrained(
-                model_path,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-                _attn_implementation="flash_attention_2" if device.type == "cuda" else "eager",
-            )
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(model_path)
-            
-            # Check if using OLMo model
-            is_olmo = "olmo" in model_path.lower()
-            
-            if is_olmo:
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    device_map="auto",
-                    torch_dtype=torch.bfloat16,
-                )
-            else:
-                # Original loading logic with flash attention attempt for other models
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.bfloat16
-                )
-                try:
-                    subprocess.run(
-                        'pip install flash-attn --no-build-isolation',
-                        env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"},
-                        shell=True,
-                        check=True
-                    )
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_path,
-                        device_map="auto",
-                        quantization_config=quantization_config,
-                        attn_implementation="flash_attention_2",
-                        torch_dtype=torch.bfloat16,
-                    )
-                except Exception as e:
-                    print(f"Flash Attention failed, falling back to default attention: {str(e)}")
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_path,
-                        device_map="auto",
-                        quantization_config=quantization_config,
-                        torch_dtype=torch.bfloat16,
-                    )
+        model, tokenizer = load_text_model(model_path, device)
 
     def predict(
         message: str,
@@ -211,7 +137,8 @@ def get_fn(model_path: str, **model_kwargs):
                 
                 # Process inputs
                 prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-                inputs = processor(text=prompt, images=[messages[0]["content"][0]["image"] if messages[0]["content"][0]["type"] == "image" else None], return_tensors="pt").to(device)
+                inputs = processor(text=prompt, images=[messages[0]["content"][0]["image"] if messages[0]["content"][0]["type"] == "image" else None], return_tensors="pt")
+                inputs = {k: v.to(device) for k, v in inputs.items()}
                 
                 # Set up streamer
                 streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
