@@ -121,47 +121,37 @@ def get_fn(model_path: str, **model_kwargs):
             is_tulu = "tulu" in model_path.lower()
             is_olmo = "olmo" in model_path.lower()
             is_smolvlm = "smolvlm" in model_path.lower()
+            is_paligemma = "paligemma" in model_path.lower()
             
-            if is_smolvlm:
-                # Format conversation for SmolVLM
-                messages = [{"role": "user", "content": []}]
-                
-                # Handle current message with multiple images
+            if is_smolvlm or is_paligemma:
                 if isinstance(message, dict) and message.get("files"):
-                    for file in message["files"]:
-                        img = Image.open(file).convert("RGB")
-                        messages[0]["content"].append({"type": "image", "image": img})
-                    if message.get("text"):
-                        messages[0]["content"].append({"type": "text", "text": message["text"]})
-                else:
-                    messages[0]["content"].append({"type": "text", "text": message})
-                
-                # Process inputs
-                prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-                inputs = processor(text=prompt, images=[messages[0]["content"][0]["image"] if messages[0]["content"][0]["type"] == "image" else None], return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                
-                # Set up streamer
-                streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
-                generation_kwargs = dict(
-                    **inputs,
-                    streamer=streamer,
-                    do_sample=True,
-                    temperature=temperature,
-                    max_new_tokens=max_new_tokens,
-                    repetition_penalty=repetition_penalty,
-                    top_p=top_p
-                )
+                    img = Image.open(message["files"][-1]).convert("RGB")
+                    if is_paligemma:
+                        # PaliGemma specific processing
+                        prompt = "<image>" + (message.get("text", "") or "caption en")
+                        inputs = processor(prompt, img, return_tensors="pt").to(device)
+                        
+                        # Set up streamer
+                        streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
+                        generation_kwargs = dict(
+                            **inputs,
+                            streamer=streamer,
+                            do_sample=True,
+                            temperature=temperature,
+                            max_new_tokens=max_new_tokens,
+                            repetition_penalty=repetition_penalty,
+                            top_p=top_p
+                        )
 
-                # Generate in a thread
-                thread = Thread(target=model.generate, kwargs=generation_kwargs)
-                thread.start()
+                        # Generate in a thread
+                        thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                        thread.start()
 
-                # Stream the output
-                response_text = ""
-                for new_text in streamer:
-                    response_text += new_text
-                    yield response_text.strip()
+                        # Stream the output
+                        response_text = ""
+                        for new_text in streamer:
+                            response_text += new_text
+                            yield response_text.strip()
                 
             else:
                 # Check if using Tulu or OLMo model
